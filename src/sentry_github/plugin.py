@@ -9,7 +9,7 @@ sentry_github.plugin
 from django import forms
 from django.utils import simplejson
 from django.utils.translation import ugettext_lazy as _
-from sentry.plugins.bases.issue import IssuePlugin
+from sentry.plugins.bases.issue import IssuePlugin, NewIssueForm
 
 import sentry_github
 import urllib2
@@ -22,6 +22,21 @@ class GitHubOptionsForm(forms.Form):
         help_text=_('Enter your repository name, including the owner.'))
 
 
+class AssociateOrNewIssueForm(NewIssueForm):
+    issue_id = forms.IntegerField(
+        required=False, widget=forms.TextInput(attrs={'class': 'span9'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(AssociateOrNewIssueForm, self).__init__(*args, **kwargs)
+        self.fields['title'].required = False
+        self.fields['title'].help_text = ("If an Issue id is provided, Title "
+                                          "is ignored and the issue will be "
+                                          "attached to an existing issue "
+                                          "with that id")
+        self.fields.insert(1, 'issue_id', self.fields['issue_id'])
+
+
 class GitHubPlugin(IssuePlugin):
     author = 'Sentry Team'
     author_url = 'https://github.com/getsentry/sentry'
@@ -31,6 +46,8 @@ class GitHubPlugin(IssuePlugin):
         ('Bug Tracker', 'https://github.com/getsentry/sentry-github/issues'),
         ('Source', 'https://github.com/getsentry/sentry-github'),
     ]
+
+    new_issue_form = AssociateOrNewIssueForm
 
     slug = 'github'
     title = _('GitHub')
@@ -53,19 +70,27 @@ class GitHubPlugin(IssuePlugin):
 
         repo = self.get_option('repo', group.project)
 
-        url = 'https://api.github.com/repos/%s/issues' % (repo,)
+        if not form_data.get('issue_id'):
+            url = 'https://api.github.com/repos/%s/issues' % (repo,)
 
-        data = simplejson.dumps({
-          "title": form_data['title'],
-          "body": form_data['description'],
-          # "assignee": form_data['asignee'],
-          # "milestone": 1,
-          # "labels": [
-          #   "Label1",
-          #   "Label2"
-          # ]
-        })
-
+            data = simplejson.dumps({
+              "title": form_data['title'],
+              "body": form_data['description'],
+              # "assignee": form_data['asignee'],
+              # "milestone": 1,
+              # "labels": [
+              #   "Label1",
+              #   "Label2"
+              # ]
+            })
+            number = None
+        else:
+            fmt = (repo, form_data['issue_id'])
+            url = 'https://api.github.com/repos/%s/issues/%s/comments' % fmt
+            data = simplejson.dumps({
+              "body": form_data['description'],
+            })
+            number = form_data['issue_id']
         req = urllib2.Request(url, data)
         req.add_header('User-Agent', 'sentry-github/%s' % self.version)
         req.add_header('Authorization', 'token %s' % auth.tokens['access_token'])
@@ -92,7 +117,7 @@ class GitHubPlugin(IssuePlugin):
         except Exception, e:
             raise forms.ValidationError(_('Error decoding response from GitHub: %s') % (e,))
 
-        return data['number']
+        return number or data['number']
 
     def get_issue_label(self, group, issue_id, **kwargs):
         return 'GH-%s' % issue_id
